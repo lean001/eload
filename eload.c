@@ -110,6 +110,7 @@ typedef struct eload_thv_{
     uint32_t conn_done;
     uint32_t conn_active;
     uint32_t conn_timeout;
+	uint32_t conn_free;
     uint8_t  done;
     eload_conn *conn_slot;             /* 工作线程连接槽 */
 }eload_thv;
@@ -188,12 +189,12 @@ static void eload_usage()
 
 static int  eload_options_parser(eload_ctx *ctx, int argc, char **argv)
 {
-    char ch;
+    int ch;
     int t_thr = max_thread;
     int c_conn = max_connections;
     int r_rate = per_connections;
     char *url = NULL;
-    while ((ch = getopt(argc, argv, "c:t:r:l:h:T:p:")) != -1) {
+    while ((ch = getopt(argc, argv, "c:t:r:l:hT:p:")) != -1) {
         switch(ch){
             case 'h':
                 return -1;
@@ -274,7 +275,8 @@ static void eload_rlimit_config()
                 limits.rlim_cur = limits.rlim_max;
             (void) setrlimit(RLIMIT_NOFILE, &limits);
         }
-        per_connections = limits.rlim_cur;
+		if(limits.rlim_cur < (size_t)per_connections)
+            per_connections = limits.rlim_cur;
     }
 
 #endif  
@@ -473,7 +475,7 @@ static int eload_handle_error(eload_conn *ctx)
     socklen_t len;
     if(getsockopt(ctx->fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0){
         if(err){
-            fprintf(stderr, "[Error] %s %d\n", strerror(err), err);
+            //fprintf(stderr, "[Error] %s %d\n", strerror(err), err);
             return -1;
         }
     }
@@ -561,6 +563,20 @@ eload_time_dealt(struct timeval *end, struct timeval *start)
 static void eload_timenow(struct timeval *tv)
 {
     gettimeofday(tv, NULL);
+}
+
+static void eload_date(char *buf, size_t buf_size)
+{
+    struct timeval tv;
+    time_t nowtime;
+    struct tm *nowtm;
+    char tmbuf[64];
+    
+    gettimeofday(&tv, NULL);
+    nowtime = tv.tv_sec;
+    nowtm = localtime(&nowtime);
+    strftime(tmbuf, sizeof tmbuf, "%Y-%m-%d %H:%M:%S", nowtm);
+    snprintf(buf, buf_size, "%s", tmbuf);
 }
 
 static float eload_clock()
@@ -675,8 +691,8 @@ static uint32_t eload_conn_timeout_check(conn_mgt *list)
                         timeout = 0;
                      break;
                 default:
-                    fprintf(stderr, "[BUG?]other stat[%d] timeout, whould be here?\n", 
-                            list->tail->tcp_status);
+                    //fprintf(stderr, "[BUG?]other stat[%d] timeout, whould be here?\n", 
+                    //        list->tail->tcp_status);
                     break;                
             }
             if(timeout){
@@ -1031,12 +1047,12 @@ static void* eload_woker(void *arg)
 {
     eload_thv *thctx = (eload_thv *)arg;
     const uint32_t conn_free = thctx->max_connections;
-    uint32_t i, conn_used;                              /* 已使用的连接数 */
     const uint32_t conn_rate = thctx->per_connections; 
     uint32_t conn_active = 0;                            /* 正在活动的连接--并发 */
     uint32_t conn_done = 0;                              /* 所有操作都已完成 */
+    uint32_t conn_used;                              /* 已使用的连接数 */
     uint32_t conn_err = 0;
-    uint32_t tmp, conn_timeout = 0;
+    uint32_t i, tmp, conn_timeout = 0;
     eload_conn *conn_ctx;
     conn_mgt *timelist;
     int n, nfds;
@@ -1095,12 +1111,13 @@ static void* eload_woker(void *arg)
                     switch(conn_ctx->tcp_status){
                         case TCP_STAT_CLOSED:
                             conn_done++;
+                            conn_active--;
                             break;
                         case TCP_STAT_ERROR:
                             conn_err++;
+                            conn_active--;
                             break;
                     }
-                    conn_active--;
                 }
             }
         }else if (nfds == 0){
@@ -1202,7 +1219,9 @@ static void eload_result(eload_ctx *ctx)
         avg_conn = total_conn*1.0 / isucc / 1000000L;
         avg_wait = total_wait*1.0 / isucc / 1000000L;
         avg_proc = total_proc*1.0 / isucc / 1000000L;
-        avg_total = total_total*1.0 / isucc;
+        avg_total = total_total*1.0 / isucc / 1000000L;
+    }else{
+        min_conn = min_proc = min_wait = min_total = 0;
     }
     
     printf("\n\nOverview:\n");
@@ -1214,12 +1233,12 @@ static void eload_result(eload_ctx *ctx)
         if(http_status_buckets[i]) 
             printf("http status %d\t\t%d\n", i, http_status_buckets[i]);
         
-    printf("\nConnection Time(s):\n");
-    printf("\t    min       \tmean    \tmax\n");
-    printf("Connect:   %ld      %f \t%ld\n", min_conn, avg_conn, max_conn);
-    printf("Waiting:   %ld      %f \t%ld\n", min_wait, avg_wait, max_wait);
-    printf("Process:   %ld      %f \t%ld\n", min_proc, avg_proc, max_proc);
-    printf("Total:     %ld      %f \t%ld\n", min_total, avg_total, max_total);
+    printf("\nConnection Time(ms):\n");
+    printf("\t    min      \tmean    \tmax\n");
+    printf("Connect:   %f      %f \t%f\n", min_conn*1.0/1000000L, avg_conn, max_conn*1.0/1000000L);
+    printf("Waiting:   %f      %f \t%f\n", min_wait*1.0/1000000L, avg_wait, max_wait*1.0/1000000L);
+    printf("Process:   %f      %f \t%f\n", min_proc*1.0/1000000L, avg_proc, max_proc*1.0/1000000L);
+    printf("Total:     %f      %f \t%f\n", min_total*1.0/1000000L, avg_total, max_total*1.0/1000000L);
 }
 
 
@@ -1247,7 +1266,7 @@ static void eload_ctx_free(eload_ctx *ctx)
 static int eload_init(eload_ctx *ctx)
 {
     uint32_t i;
-    eload_rlimit_config();
+    //eload_rlimit_config();
    
     for(i = 0; i < max_http_servers; i++){
         if(eload_address_lookup(&http_servers[i]) != 0)
@@ -1265,40 +1284,69 @@ static void eload_destory(eload_ctx *ctx){
 
 static void eload_run(eload_ctx *ctx)
 {
+    uint32_t count = 0, succ_per, succ_max = 0, succ_totall = 0;
+    uint32_t succ_min = max_connections;
+    uint32_t conn_free;
     uint32_t conn_err;
-    uint32_t conn_done;
+    uint32_t conn_timeout;
+    uint32_t conn_done;    /* 完成http请求的连接数 */
     uint32_t last_done = 0;
     uint16_t conn_active;
     uint8_t i = 0, finish;
-    
-    struct timeval tv;   
-    gettimeofday(&tv, NULL);
-    fprintf(stderr, "%02d.%02d: eload start\n", tv.tv_sec, tv.tv_usec); 
+    char date_str[64];
+
+    eload_date(date_str, sizeof(date_str));
+    fprintf(stderr, "%s: eload start\n", date_str); 
     
     eload_state = ELOAD_RUNING;  //free waiting child
     while(1){
         //TODO：运行时的连接状态统计
+        conn_free = 0;
         conn_err = 0;
         conn_done = 0;
         conn_active = 0;
         finish = 0;
+        conn_timeout = 0;
         sleep(1);
         for(i = 0; i < max_thread; i++){
+			conn_timeout += ctx->thrdata[i].conn_timeout;
             conn_err += ctx->thrdata[i].conn_err;
             conn_done += ctx->thrdata[i].conn_done;
             conn_active += ctx->thrdata[i].conn_active;
             if(ctx->thrdata[i].done)finish++;
         }
-        gettimeofday(&tv, NULL);
-        
-        fprintf(stderr, "%02d# rate: %d active: %d done: %d error: %d\n",
-                tv.tv_sec,
-                conn_done - last_done, conn_active, conn_done, conn_err);
-        last_done = conn_done;
+        conn_free = max_connections - conn_timeout -
+                    conn_err - conn_done - conn_active;
+        eload_date(date_str, sizeof(date_str));
 
+        succ_per = conn_done - last_done;
+        fprintf(stderr, "%s# succ: %d active: %d  finish: %d"
+                        "  free: %d  timeout: %d  error: %d\n",
+                    date_str, succ_per, conn_active, conn_done,
+                    conn_free, conn_timeout, conn_err);
+        
+        last_done = conn_done;
+        if(succ_min > succ_per) succ_min = succ_per;
+        if(succ_max < succ_per) succ_max = succ_per;
+        succ_totall += succ_per;
+        count++;
+        
         if(finish == max_thread) break;
     }
+
     eload_result(ctx);
+    
+    if(count){
+        printf("\n\nConnection succ(c/s):\n");
+        printf("\tmin       mean     max\n\t%d    %f     %d\n", 
+                succ_min, 
+                succ_totall*1.0/count,
+                succ_max);
+    }
+
+
+    
+
     
 }
 
