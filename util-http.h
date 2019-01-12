@@ -2,7 +2,7 @@
 #include "eload.h"
 
 #define HTTP_GET_TEMP "GET %s HTTP/1.0\r\nUser-Agent: eload/1.0\r\nAccept: */*\r\nHost: %s\r\nConnection: Close\r\n\r\n"
-
+#define HTTP_POST_TEMP "POST %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: eload/1.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-us,en;q=0.5\r\nAccept-Encoding: gzip,deflate\r\nAccept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7\r\nConnection: Close\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n"
 #define PROTO_HTTP  0
 #define PROTO_HTTPS 1
 #define PROTO_ERROR 2
