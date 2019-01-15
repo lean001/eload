@@ -23,7 +23,10 @@ cd eload/; make
 
 ### 输出说明
 ```
-2019-01-12 22:45:59# succ: 14 active: 100  finish: 1948  free: 1855  timeout: 97  error: 0
+[root@localhost eload]# ./eload -t 1 -r 10 -c 1000 -l http://192.168.234.144/  
+[DEBUG] eload_address_new: 192.168.234.144
+2019-01-15 17:10:45: eload start
+2019-01-15 17:10:46# succ: 1000 active: 0  finish: 1000  free: 0  timeout: 0  error: 0
 # succ    当前请求成功的连接数
 # active  当前正在进行的连接数
 # finish  已成功完成的连接数
@@ -40,14 +43,12 @@ http status 200         3925     # http响应对应状态码统计
 
 # 连接时长消耗
 Connection Time(ms):
-            min           mean           max
-Connect:   0.005009      0.099203       4.093774      #从连接发起到连接成功
-Waiting:   0.010392      0.592263       56.112589     #从http请求数据发送至接收到响应
-Process:   0.000003      0.000006       0.000127      #响应数据处理到连接关闭
-Total:     0.018885      0.691471       56.125598     #整个连接过程总时常
+            min        mean      max
+Connect:   0.069      0.279     5.938      #从连接发起到连接成功
+Waiting:   0.675      1.950     11.258     #从http请求数据发送至接收到响应
+Process:   0.000      0.001     0.044      #响应数据处理到连接关闭
+Total:     1.018      2.230     13.903     #整个连接过程总时常
 
-# 每秒钟的并发数(最小/平均/最大)
-Connection succ(c/s):
-        min       mean        max
-        0       13.382979     37
+# 平均并发数(c/s)
+Connection succ(c/s):  4238.473
 ```
