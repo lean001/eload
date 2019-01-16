@@ -562,7 +562,6 @@ static void eload_handle_event(int ep, struct epoll_event *ev, conn_mgt *timelis
                 return;
             }
             eload_conn_status_update(conn_ctx, TCP_STAT_READ);
-            eload_conn_timeout_update(timelist, conn_ctx);
         }else{
             fprintf(stderr, "[BUG] %s: EPOLLOUT [%d] conn't be here!!\n", 
                 __func__, conn_ctx->tcp_status);
@@ -574,11 +573,9 @@ static void eload_handle_event(int ep, struct epoll_event *ev, conn_mgt *timelis
                 eload_conn_delete(timelist, conn_ctx, TCP_STAT_ERROR);
                 return;
             }
-            eload_conn_timeout_update(timelist, conn_ctx);
             /* TODO: 解析http报文，完全接收完后再关闭 */
             if(ret == PROC_CLOSED){
                 eload_conn_delete(timelist, conn_ctx, TCP_STAT_CLOSED);
-                //eload_handle_disconn(conn_ctx, TCP_STAT_CLOSED);
             }
         }else{
             fprintf(stderr, "[BUG] %s: EPOLLIN [%d] conn't be here!!\n", 
@@ -651,14 +648,23 @@ static void eload_conn_timeout_free(conn_mgt *list)
 
 
 static void eload_conn_delete(conn_mgt *list, eload_conn *node, int status){
-    if(node->prev != NULL)
-        node->prev->next = node->next;
-    if(node->next != NULL)
+    if(list->head== NULL || node->fd == -1) return;
+    
+    if(node == list->head){  /* 头 */
+        list->head = list->head->next;
+        if(list->head){
+            list->head->prev = NULL;
+        }else{
+            list->tail = NULL;
+        }
+    }else if(node == list->tail){   /* 尾 */
+        list->tail = list->tail->prev;
+        list->tail->next = NULL;
+    }else{
         node->next->prev = node->prev;
-    if(list->head == node)
-        list->head = node->next;
-    if(list->tail == node)
-        list->tail == node->prev;
+        node->prev->next = node->next;
+    }
+
     node->prev = NULL;
     node->next = NULL;
 
@@ -670,9 +676,8 @@ static void eload_conn_delete(conn_mgt *list, eload_conn *node, int status){
 */
 static inline void eload_conn_timeout_add(conn_mgt *list, eload_conn *node)
 {
-    assert(node->prev == NULL);
-    assert(node->next == NULL);
-    
+    assert(node->fd != -1);
+
     if(list->head == NULL){
         node->next = NULL;
         node->prev = NULL;
@@ -701,21 +706,18 @@ static void eload_conn_timeout_remove(conn_mgt *list)
         list->head = NULL;
         list->tail = NULL;
     }else{
-        list->tail = tmp->prev;
+        list->tail = list->tail->prev;
         list->tail->next = NULL;
-        
-        tmp->prev = NULL;
-        tmp->next = NULL;
     }
+    tmp->prev = NULL;
+    tmp->next = NULL;   
+    eload_handle_disconn(tmp, TCP_STAT_TIMMEOUT);
     //fprintf(stderr, "[DEBUG] timeout remove %p  status: %s\n", 
     //    tmp, tcpstat_to_string[tmp->tcp_status].str);
-    
-    eload_handle_disconn(tmp, TCP_STAT_TIMMEOUT);
 }
 
 static uint32_t eload_conn_timeout_check(conn_mgt *list)
 {
-//#define EPOLL_RES_TIME_OUT (float)(3.880005)
 #define EPOLL_RES_TIME_OUT (30*ELOAD_USEC_PER_SEC)  /* 30s 超时 */
 
     uint8_t timeout = 1;
@@ -723,7 +725,6 @@ static uint32_t eload_conn_timeout_check(conn_mgt *list)
     if(list->tail){
         struct timeval now;
         eload_timenow(&now);
-        //float now = eload_clock();
         while(list->tail && timeout){
             switch(list->tail->tcp_status){
                 case TCP_STAT_READ:/* 等待服务器响应超时       */
@@ -748,8 +749,7 @@ static uint32_t eload_conn_timeout_check(conn_mgt *list)
                 if(list->tail->tcp_status < TCP_STAT_CLOSED){
                     count++;  /* 只统计正常连接超时 */
                 }
-                eload_conn_timeout_remove(list);
-                
+                eload_conn_timeout_remove(list);  
             }
         }
     }
@@ -764,7 +764,7 @@ static uint32_t eload_conn_timeout_check(conn_mgt *list)
 static inline void eload_conn_timeout_update(conn_mgt *list, eload_conn *node)
 {
     eload_conn *tmp = NULL;
-    if(list->head == NULL || node == NULL) return;
+    if(list->head == NULL || node == NULL || node->fd == -1) return;
 
     if(node != list->head){
         assert(list->tail != NULL);
@@ -772,10 +772,8 @@ static inline void eload_conn_timeout_update(conn_mgt *list, eload_conn *node)
             list->tail = node->prev;
             list->tail->next = NULL;
         }else{  /* 中部 */
-            if(node->next)
-                node->next->prev = node->prev;
-            if(node->prev)
-                node->prev->next = node->next;
+            node->next->prev = node->prev;
+            node->prev->next = node->next;
         }
         node->prev = NULL;
         node->next = list->head;
@@ -825,7 +823,6 @@ static int eload_handle_conn(eload_conn *conn_ctx, int ephandler)
         conn_ctx->fd = sfd;
 
         eload_timenow(&conn_ctx->conn_at);
-        //conn_ctx->conn_at = eload_clock();
         eload_event_update(conn_ctx, ephandler, EPOLLIN|EPOLLOUT, EPOLL_CTL_ADD);        
         ret = connect(sfd, (struct sockaddr *)&addr, sizeof(addr));
         if(ret == 0){
@@ -854,7 +851,6 @@ static int eload_handle_conn(eload_conn *conn_ctx, int ephandler)
 static void eload_handle_disconn(eload_conn *conn_ctx, int status)
 {
     if(conn_ctx->fd != -1){
-        //conn_ctx->close_at = eload_clock();
         eload_timenow(&conn_ctx->close_at);
         close(conn_ctx->fd);
         conn_ctx->fd = -1;
@@ -1045,7 +1041,7 @@ static int eload_thval_deinit(eload_ctx *ctx)
 }
 
 
-#define EPOLL_TIMEOUT_USEC 5  /* epoll等待时长，简单式控制每秒并发 */
+#define EPOLL_TIMEOUT_USEC 3  /* epoll等待时长，该参数和并发有紧密联系 */
 
 static void* eload_woker(void *arg)
 {
@@ -1123,6 +1119,7 @@ static void* eload_woker(void *arg)
                             break;
                     }
                 }
+                eload_conn_timeout_update(timelist, conn_ctx);
             }
         }else if (nfds == 0){
             //fprintf(stderr, "[DEBUG] epoll_wait timeout\n");
@@ -1229,7 +1226,6 @@ static void eload_result(eload_ctx *ctx)
         min_conn = min_proc = min_wait = min_total = 0;
     }
     
-    printf("\n\nOverview:\n");
     for(i = TCP_STAT_FREE; i < TCP_STAT_MAX; i++)
         if(counter[i]) printf("tcp status %s \t%d\n",
             tcpstat_to_string[i].str, counter[i]);
@@ -1355,10 +1351,10 @@ static void eload_run(eload_ctx *ctx)
         
         if(finish == max_thread) break;
     }
-
-    eload_result(ctx);
-
     double loop_time = eload_get_timetoken_sec(ctx);
+    printf("\n\nOverview:\n");
+    printf("Time taken(s):   %.3f\n", loop_time);
+    eload_result(ctx);
     if(count){
         printf("\nConnection succ(c/s):  %.3f\n\n", conn_done*1.0/loop_time);
     }
