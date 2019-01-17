@@ -218,8 +218,8 @@ static int  eload_options_parser(eload_ctx *ctx, int argc, char **argv)
                 break;
         }
     }
-    if(r_rate < t_thr){
-        fprintf(stderr, "NOTE: must be rate >= threads\n");
+    if(r_rate <= 0 || r_rate < t_thr || c_conn <= 0){
+        fprintf(stderr, "NOTE: must be rate >= threads, conn > 0\n");
         return -1;
     }
     max_thread = t_thr;
@@ -976,6 +976,7 @@ void eload_thread_setup(eload_thv *thread_data, void* (*do_task)(void *))
 static int eload_thval_init(eload_ctx *ctx)
 {
     int i = 0;
+    
     ctx->thrdata = calloc(max_thread, sizeof(eload_thv));
     if(!ctx->thrdata){
         fprintf(stderr, "%s: alloc thread data faild\n", __func__);
@@ -1012,7 +1013,7 @@ static int eload_thval_init(eload_ctx *ctx)
         ctx->thrdata[i].conn_slot = 
             calloc(ctx->thrdata[i].max_connections, sizeof(eload_conn));
         if(!ctx->thrdata[i].conn_slot){
-            fprintf(stderr, "%s: alloc failed for conn slot [%d]", __func__, 
+            fprintf(stderr, "%s: alloc failed for conn slot [%d]\n", __func__, 
                     ctx->thrdata[i].max_connections * sizeof(eload_conn));
             return -1;
         }
@@ -1031,10 +1032,11 @@ static int eload_thval_deinit(eload_ctx *ctx)
 
     if(!ctx->thrdata) return;
     for(i = 0; i < max_thread; i++){
-        while(!ctx->thrdata[i].done)usleep(5);
+        while(ctx->thrdata[i].tid && !ctx->thrdata[i].done) usleep(5);
         if(ctx->thrdata[i].conn_slot)
             free(ctx->thrdata[i].conn_slot);
-        pthread_join(ctx->thrdata[i].tid, NULL);
+        if(ctx->thrdata[i].tid)
+            pthread_join(ctx->thrdata[i].tid, NULL);
     }
     free(ctx->thrdata);
     ctx->thrdata = NULL;
@@ -1087,7 +1089,7 @@ static void* eload_woker(void *arg)
                 /* 连接成功，直接发数据 */
                 if(thctx->conn_slot[i].tcp_status == TCP_STAT_WRITE){
                     if(eload_handle_write(&thctx->conn_slot[i]) < 0){
-                        eload_conn_delete(timelist, &thctx->conn_slot[i], TCP_STAT_ERROR);
+                        eload_handle_disconn(&thctx->conn_slot[i], TCP_STAT_ERROR);
                         conn_err++;
                         conn_active--;
                         continue;
@@ -1145,6 +1147,7 @@ static void* eload_woker(void *arg)
 end:
     eload_conn_timeout_free(timelist);
     if(conn_ev) free(conn_ev);
+    if(ephandler != -1) close(ephandler);
     
     thctx->done = 1;
     return arg;
